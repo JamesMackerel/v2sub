@@ -33,11 +33,11 @@ When using v2rayU, I encountered issues with subscription links from certain pro
 ## Principle
 
 ```
-     Node Data           Corrected Data 
-Service Provider -----> v2sub ------------> Client
-                         ^ 
-                         ^ Listens on a local port
-                         ^ Returns the corrected link after fixing the one provided by the service
+                  Node Data           Corrected Data 
+Service Provider ------------> v2sub ----------------> Client
+                                 ^ 
+                                 ^ Listens on a local port
+                                 ^ Returns the corrected link after fixing the one provided by the service
 ```
 
 ## Usage
