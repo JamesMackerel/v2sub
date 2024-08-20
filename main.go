@@ -14,6 +14,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/pelletier/go-toml/v2"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,7 +47,9 @@ func RequestSubscription(u string, proxyStr string) (string, error) {
 	if err != nil {
 		return "", err // 如果请求发送失败，返回错误
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("server returned non-200 status: %s", resp.Status)
@@ -98,6 +101,7 @@ type Config struct {
 	SubUrl     string `json:"subUrl" yaml:"subUrl" toml:"subUrl"`
 	ProxyUrl   string `json:"proxyUrl" yaml:"proxyUrl" toml:"proxyUrl"`
 	ListenAddr string `json:"listenAddr" yaml:"listenAddr" toml:"listenAddr"`
+	VerboseLog bool   `json:"verboseLog" yaml:"verboseLog" toml:"verboseLog"`
 }
 
 func loadConfig(filePath string, config *Config) error {
@@ -119,13 +123,27 @@ func loadConfig(filePath string, config *Config) error {
 	return err
 }
 
+func CheckAnyParamExists(params []string) bool {
+	for _, arg := range os.Args[1:] { // Skip the first argument (program name)
+		for _, param := range params {
+			if arg == param {
+				return true
+			}
+		}
+	}
+
+	// Return false if none of the parameters are found
+	return false
+}
+
 func prepareConfig() (*Config, error) {
 	// Define CLI arguments
 	subUrl := flag.String("subUrl", "", "Subscription URL")
 	proxyUrl := flag.String("proxyUrl", "", "Proxy URL")
 	listenAddr := flag.String("listen", "127.0.0.1:18888", "HTTP listen address:port")
-	configPath := flag.String("config", "v2sub-conf.yml", "Path to the config file")
-	flag.StringVar(configPath, "c", "v2sub-conf.yml", "Path to the config file (shorthand)")
+	configPath := flag.String("config", "v2sub-conf.yml", "Path to the config file, if use default value, must be present at the last argument")
+	verboseLog := flag.Bool("verboseLog", false, "Print verbose log")
+	flag.StringVar(configPath, "c", "v2sub-conf.yml", "Path to the config file (shorthand), if use default value, must be present at the last argument")
 	flag.Parse()
 
 	// Check if -h or --help is passed
@@ -134,12 +152,14 @@ func prepareConfig() (*Config, error) {
 		return nil, fmt.Errorf("help requested")
 	}
 
-	// Load config from file
 	var config Config
-	if err := loadConfig(*configPath, &config); err != nil {
-		fmt.Println("Error loading config file:", err)
-		flag.Usage()
-		return nil, err
+
+	// Load config from file
+	if CheckAnyParamExists([]string{"-config", "-c"}) {
+		if err := loadConfig(*configPath, &config); err != nil {
+			flag.Usage()
+			return nil, err
+		}
 	}
 
 	// Override config with CLI args if provided
@@ -152,10 +172,12 @@ func prepareConfig() (*Config, error) {
 	if *listenAddr != "" {
 		config.ListenAddr = *listenAddr
 	}
+	if CheckAnyParamExists([]string{"-verboseLog"}) {
+		config.VerboseLog = *verboseLog
+	}
 
 	// Validate required arguments
 	if config.SubUrl == "" || config.ProxyUrl == "" {
-		fmt.Println("Error: Both subUrl and proxyUrl are required")
 		flag.PrintDefaults()
 		return nil, fmt.Errorf("missing required arguments")
 	}
@@ -163,18 +185,35 @@ func prepareConfig() (*Config, error) {
 	return &config, nil
 }
 
+func buildLogger() (*zap.Logger, *zap.SugaredLogger) {
+	// Initialize zap logger
+	zapConfig := zap.NewDevelopmentConfig()
+	_logger, err := zapConfig.Build()
+	_slog := _logger.Sugar()
+	if err != nil {
+		panic(fmt.Sprintf("failed to initialize logger: %v", err))
+	}
+	return _logger, _slog
+}
+
+var logger, slog = buildLogger()
+
 func main() {
+	defer func(logger *zap.Logger) {
+		_ = logger.Sync()
+	}(logger)
+
 	config, err := prepareConfig()
 	if err != nil {
-		panic(err)
+		slog.Fatalf("failed to prepare config: %v", err)
 	}
 
 	var e = echo.New()
 	e.GET("/", func(c echo.Context) error {
-		fmt.Println("start get")
+		logger.Info("start get request")
 		subscription, err := RequestSubscription(config.SubUrl, config.ProxyUrl)
 		if err != nil {
-			fmt.Printf("error get sub: %v", err)
+			logger.Error("error getting subscription", zap.Error(err))
 			return c.String(http.StatusInternalServerError, err.Error())
 		}
 
@@ -184,15 +223,18 @@ func main() {
 
 		decodeString, err := base64.URLEncoding.DecodeString(subscription)
 		if err != nil {
-			fmt.Printf("failed to decode: %v", err)
+			logger.Error("failed to decode subscription", zap.Error(err))
 			return c.String(http.StatusInternalServerError, err.Error())
 		}
 
-		fmt.Printf("got origin sub: %s", subscription)
+		if config.VerboseLog {
+			fmt.Println("original subscription:")
+			fmt.Println(string(decodeString))
+		}
 
 		return c.String(http.StatusOK, ConvertSubscription(string(decodeString)))
 	})
 
-	fmt.Printf("Starting server on %s\n", config.ListenAddr)
-	e.Logger.Fatal(e.Start(config.ListenAddr))
+	logger.Info("starting server", zap.String("listenAddr", config.ListenAddr))
+	slog.Fatal("%v", e.Start(config.ListenAddr))
 }
