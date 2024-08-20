@@ -2,15 +2,19 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/labstack/echo/v4"
+	"github.com/pelletier/go-toml/v2"
+	"gopkg.in/yaml.v3"
 )
 
 func RequestSubscription(u string, proxyStr string) (string, error) {
@@ -90,30 +94,85 @@ func containsHelpFlag(args []string) bool {
 	return false
 }
 
-func main() {
-	// read CLI args
+type Config struct {
+	SubUrl     string `json:"subUrl" yaml:"subUrl" toml:"subUrl"`
+	ProxyUrl   string `json:"proxyUrl" yaml:"proxyUrl" toml:"proxyUrl"`
+	ListenAddr string `json:"listenAddr" yaml:"listenAddr" toml:"listenAddr"`
+}
+
+func loadConfig(filePath string, config *Config) error {
+	file, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	switch filepath.Ext(filePath) {
+	case ".json":
+		err = json.Unmarshal(file, config)
+	case ".yaml", ".yml":
+		err = yaml.Unmarshal(file, config)
+	case ".toml":
+		err = toml.Unmarshal(file, config)
+	default:
+		return fmt.Errorf("unsupported file format")
+	}
+	return err
+}
+
+func prepareConfig() (*Config, error) {
+	// Define CLI arguments
 	subUrl := flag.String("subUrl", "", "Subscription URL")
 	proxyUrl := flag.String("proxyUrl", "", "Proxy URL")
 	listenAddr := flag.String("listen", "127.0.0.1:18888", "HTTP listen address:port")
+	configPath := flag.String("config", "v2sub-conf.yml", "Path to the config file")
+	flag.StringVar(configPath, "c", "v2sub-conf.yml", "Path to the config file (shorthand)")
 	flag.Parse()
 
 	// Check if -h or --help is passed
-	if len(os.Args) == 1 || containsHelpFlag(os.Args) {
+	if containsHelpFlag(os.Args) {
 		flag.Usage()
-		return
+		return nil, fmt.Errorf("help requested")
+	}
+
+	// Load config from file
+	var config Config
+	if err := loadConfig(*configPath, &config); err != nil {
+		fmt.Println("Error loading config file:", err)
+		flag.Usage()
+		return nil, err
+	}
+
+	// Override config with CLI args if provided
+	if *subUrl != "" {
+		config.SubUrl = *subUrl
+	}
+	if *proxyUrl != "" {
+		config.ProxyUrl = *proxyUrl
+	}
+	if *listenAddr != "" {
+		config.ListenAddr = *listenAddr
 	}
 
 	// Validate required arguments
-	if *subUrl == "" || *proxyUrl == "" {
-		fmt.Println("Error: Both -subUrl and -proxyUrl are required")
+	if config.SubUrl == "" || config.ProxyUrl == "" {
+		fmt.Println("Error: Both subUrl and proxyUrl are required")
 		flag.PrintDefaults()
-		return
+		return nil, fmt.Errorf("missing required arguments")
+	}
+
+	return &config, nil
+}
+
+func main() {
+	config, err := prepareConfig()
+	if err != nil {
+		panic(err)
 	}
 
 	var e = echo.New()
 	e.GET("/", func(c echo.Context) error {
 		fmt.Println("start get")
-		subscription, err := RequestSubscription(*subUrl, *proxyUrl)
+		subscription, err := RequestSubscription(config.SubUrl, config.ProxyUrl)
 		if err != nil {
 			fmt.Printf("error get sub: %v", err)
 			return c.String(http.StatusInternalServerError, err.Error())
@@ -134,6 +193,6 @@ func main() {
 		return c.String(http.StatusOK, ConvertSubscription(string(decodeString)))
 	})
 
-	fmt.Printf("Starting server on %s\n", *listenAddr)
-	e.Logger.Fatal(e.Start(*listenAddr))
+	fmt.Printf("Starting server on %s\n", config.ListenAddr)
+	e.Logger.Fatal(e.Start(config.ListenAddr))
 }
