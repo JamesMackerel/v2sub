@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -80,6 +81,15 @@ func ConvertSubscription(content string) string {
 	return strings.Join(processedURLs, "\n")
 }
 
+func containsHelpFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	// read CLI args
 	subUrl := flag.String("subUrl", "", "Subscription URL")
@@ -87,6 +97,13 @@ func main() {
 	listenAddr := flag.String("listen", "127.0.0.1:18888", "HTTP listen address:port")
 	flag.Parse()
 
+	// Check if -h or --help is passed
+	if len(os.Args) == 1 || containsHelpFlag(os.Args) {
+		flag.Usage()
+		return
+	}
+
+	// Validate required arguments
 	if *subUrl == "" || *proxyUrl == "" {
 		fmt.Println("Error: Both -subUrl and -proxyUrl are required")
 		flag.PrintDefaults()

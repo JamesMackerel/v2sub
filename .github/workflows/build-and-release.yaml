@@ -1,0 +1,58 @@
+name: Build and Release Go Binaries
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Trigger on version tags, e.g., v1.0.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        goos: [ linux, windows ]
+        goarch: [ amd64 ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build for ${{ matrix.goos }}-${{ matrix.goarch }}
+        run: |
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o v2sub-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2sub-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: v2sub-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: v2sub-linux-amd64
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: v2sub-windows-amd64
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            v2sub-linux-amd64
+            v2sub-windows-amd64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
